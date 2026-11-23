@@ -21,7 +21,20 @@ function parseStates(text) {
 
 // ---- Schemas ---------------------------------------------------------------
 
-const MAIN_SCHEMA = [
+// The schema depends on the data: an entity picker is shown under an action
+// only when that action uses an entity (toggle / more-info).
+const ENTITY_ACTIONS = ["toggle", "more-info"];
+
+function actionSchema(key, defaultAction, data) {
+  const fields = [{ name: key, selector: { ui_action: { default_action: defaultAction } } }];
+  const action = (data[key] || {}).action;
+  if (ENTITY_ACTIONS.includes(action)) {
+    fields.push({ name: `${key}_entity`, selector: { entity: {} } });
+  }
+  return fields;
+}
+
+const mainSchema = (data) => [
   { name: "entity", required: true, selector: { entity: {} } },
   {
     type: "grid", name: "", schema: [
@@ -59,8 +72,8 @@ const MAIN_SCHEMA = [
   },
   {
     type: "expandable", name: "interactions", flatten: true, title: "Interactions", icon: "mdi:gesture-tap", schema: [
-      { name: "tap_action", selector: { ui_action: { default_action: "more-info" } } },
-      { name: "hold_action", selector: { ui_action: { default_action: "none" } } },
+      ...actionSchema("tap_action", "more-info", data),
+      ...actionSchema("hold_action", "none", data),
     ],
   },
 ];
@@ -107,6 +120,8 @@ const LABELS = {
   statistics_opacity: "Statistics band opacity",
   tap_action: "Tap action",
   hold_action: "Hold action",
+  tap_action_entity: "Tap action entity",
+  hold_action_entity: "Hold action entity",
   label: "Label",
   opacity: "Opacity",
   invert: "Highlight when inactive",
@@ -115,6 +130,9 @@ const LABELS = {
 };
 
 const HELPERS = {
+  entity_id: "Ignored when a Subtitle is set or the Statistics band is on",
+  tap_action_entity: "Defaults to the card entity",
+  hold_action_entity: "Defaults to the card entity",
   secondary_info: "Shown under the name instead of the entity ID",
   unit: "Defaults to the entity's unit",
   smoothing: "0 = raw data",
@@ -215,6 +233,8 @@ export class OverlayGraphCardEditor extends HTMLElement {
       show: { ...SHOW_DEFAULTS, ...(c.show || {}) },
       tap_action: c.tap_action || ACTION_DEFAULTS.tap_action,
       hold_action: c.hold_action || ACTION_DEFAULTS.hold_action,
+      tap_action_entity: (c.tap_action || {}).entity,
+      hold_action_entity: (c.hold_action || {}).entity,
     };
   }
 
@@ -241,7 +261,15 @@ export class OverlayGraphCardEditor extends HTMLElement {
     if (Object.keys(show).length) n.show = show;
     else delete n.show;
     for (const k of ["tap_action", "hold_action"]) {
-      const v = value[k];
+      let v = value[k];
+      if (!isEmpty(v)) {
+        // The action editor may drop `entity`; re-apply it from the picker,
+        // and only keep it for actions that use an entity.
+        v = { ...v };
+        const ent = value[`${k}_entity`];
+        if (ENTITY_ACTIONS.includes(v.action) && !isEmpty(ent)) v.entity = ent;
+        else delete v.entity;
+      }
       if (isEmpty(v) || sameJson(v, ACTION_DEFAULTS[k])) delete n[k];
       else n[k] = v;
     }
@@ -319,7 +347,7 @@ export class OverlayGraphCardEditor extends HTMLElement {
         <svg viewBox="0 0 24 24"><path d="${mdiPlus}"></path></svg>Add overlay
       </button>
     `;
-    this._mainForm = this._makeForm(MAIN_SCHEMA);
+    this._mainForm = this._makeForm(mainSchema(this._mainData()));
     this._mainForm.addEventListener("value-changed", (ev) => {
       ev.stopPropagation();
       this._mainChanged(ev.detail.value);
@@ -336,8 +364,10 @@ export class OverlayGraphCardEditor extends HTMLElement {
 
   _update() {
     if (!this._built) this._build();
+    const data = this._mainData();
     this._mainForm.hass = this._hass;
-    this._mainForm.data = this._mainData();
+    this._mainForm.schema = mainSchema(data);
+    this._mainForm.data = data;
 
     const overlays = this._overlays();
     if (overlays.length !== this._overlayCount) {

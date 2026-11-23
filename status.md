@@ -188,6 +188,7 @@ Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
 - ha-form is lazy-loaded by HA; `ensureHaElements()` forces it by opening a built-in card editor.
 - Card fixes: `icon` option was ignored (now applied); overlays without an entity are skipped (avoids an unfiltered history fetch while adding one in the editor). `preview: true` in card picker.
 - Mapping logic unit-tested in Node; UI untested.
+- Live test round 1: OK. Added per-action entity picker (shown for toggle / more-info; writes `tap_action.entity`) and helper note on Display → Entity ID (ignored when Subtitle set or Statistics on).
 
 ### Editor live test checklist
 
