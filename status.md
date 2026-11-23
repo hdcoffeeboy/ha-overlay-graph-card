@@ -146,28 +146,45 @@ Prioritised, none started:
 - A GitHub or Claude Code session should work directly from `overlay-graph-card.js`; there is no build step or dependency manifest. Chart.js and the annotation plugin load from cdnjs at runtime, so HA needs outbound access to `cdnjs.cloudflare.com`.
 - Local syntax check: `node --input-type=module < overlay-graph-card.js` (expect only `ReferenceError: HTMLElement is not defined`).
 
-## Code review — 2026-11-23 (Claude Code, first session)
+## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (live-tested OK, ready to merge)
 
-Findings not already listed above:
+Fixed (code-verified with jsc unit checks; **not yet tested in live HA**):
 
-- **Bug: primary series misaligned with overlays.** `resampleToPoints` spans first→last state timestamp, but labels and overlays span window start→now. A sensor that last changed 3 h ago gets stretched over the full window.
-- **Bug: `loadChartJs` has no `onerror`.** CDN blocked/offline → promise never resolves, card shows nothing, no error.
-- **Bug: no `disconnectedCallback`.** Chart is never destroyed on dashboard navigation (leak).
-- **`customElements.define` unguarded.** Throws if the resource is loaded twice (e.g. old `/local/` + HACS copy).
-- **Editor stub hurts UX.** `getConfigElement` returns a non-functional editor; remove until a real one exists so HA shows its YAML editor.
-- **`getStubConfig` uses `sensor.example`.** Card picker preview errors; pick a real sensor from `hass.states`.
-- **Unescaped config strings in `innerHTML`** (`name`, `secondary_info`, `label`).
-- **Actions outdated:** `call-service` should also accept `perform-action` / `data` / `target`; `navigate` must dispatch `location-changed`.
-- **Dark mode:** use `hass.themes.darkMode`, not `prefers-color-scheme`.
-- **X labels show time only;** ambiguous when `hours_to_show` > 24.
-- **Unit in tooltip/y-axis** ignores `unit_of_measurement` (only `c.unit`).
+- Primary series now sampled on the same window grid as overlays and labels (was stretched first→last state). Points before the first record are `null`.
+- Active-state logic unified in `makeActiveTest(ov)` + `activeAt()`; bar mode now honours `active_state` (issue 3).
+- `loadChartJs` rejects on load failure, retries next refresh, error shown in card; reuses an existing `window.Chart`.
+- `connectedCallback` / `disconnectedCallback` destroy and redraw the chart.
+- Double registration guarded; `documentationURL` set (issue 11).
+- Editor stub removed (HA shows YAML editor); example moved to README (issue 10 remains: no GUI).
+- `getStubConfig(hass)` picks a real numeric sensor + binary_sensor.
+- Config strings HTML-escaped.
+- Tap/hold delegate to HA's `hass-action` event: supports more-info, toggle, navigate, url, perform-action, legacy call-service, confirmation (issues 6, 7).
+- Dark mode from `hass.themes.darkMode` (issue 4).
+- X labels include weekday (>24 h) or date (>7 d).
+- Tooltip/y-axis unit falls back to `unit_of_measurement`.
 
-## HACS release plan (agreed order TBD)
+Notes: Node is not installed; syntax check with `/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc -m overlay-graph-card.js` (expect only `HTMLElement` error).
 
-1. `git init`, push to public GitHub repo; add LICENSE (MIT).
-2. Fix the bugs above.
+Live test round 1 (2026-11-23): navigation, theme switch, 72 h weekday labels OK. Failed: no overlays, squashed graph, cluttered rotated x labels, error `e.scales.xAxes.concat`.
+- **Cause:** another dashboard card loads Chart.js **v2** onto `window.Chart`; the card reused it. **Fix:** card now loads its own v4 copy + annotation plugin, keeps a private `ChartLib` reference and restores the previous `window.Chart`. (Bundling in step 3 removes this juggling entirely.)
+- **X axis:** new `buildTimeTicks()` places ticks at round local times (5 min … 2 weeks steps, ~1 tick per 60 px); midnight shows weekday (≤7 d) or date. Honours HA profile 12/24 h setting via `localeOpts(hass)`.
+
+Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
+
+### Live HA test checklist before merge
+
+- Slow-changing sensor (no change for hours): line reaches right edge and aligns with overlays
+- Tap more-info, hold toggle with per-action `entity`, navigate
+- Navigate away and back; dark/light theme switch
+- `hours_to_show: 72` labels
+- Round 2: overlays visible incl. currently-active one at right edge; no console error; other Chart.js-v2 card on same dashboard still works; tick spacing at 6 h / 24 h / 72 h; bar mode grid alignment
+
+## HACS release plan
+
+1. ~~Repo + LICENSE~~ (private for now; make public before HACS)
+2. ~~Fix initial bugs~~ ~~live-test~~ → merge `fix/initial-bugs`
 3. Bundle Chart.js + annotation plugin (npm + Rollup → `dist/overlay-graph-card.js`) instead of runtime CDN.
-4. `hacs.json` (`name`, `filename: overlay-graph-card.js`, `render_readme: true`), README with screenshots, set `documentationURL`.
+4. `hacs.json` (`name`, `filename: overlay-graph-card.js`, `render_readme: true`), README screenshots.
 5. GitHub Actions: HACS validation + build-and-attach release asset on tag.
 6. Repo description, topics, issues enabled; tag `v1.0.0`.
 7. Use as custom repository first; then PR to `hacs/default`.
