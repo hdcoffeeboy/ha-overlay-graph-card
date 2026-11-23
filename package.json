@@ -1,0 +1,23 @@
+{
+  "name": "overlay-graph-card",
+  "version": "1.0.0",
+  "description": "Home Assistant Lovelace card: sensor history graph with overlays shaded from other entities' states.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:hdcoffeeboy/ha-overlay-graph-card",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w"
+  },
+  "dependencies": {
+    "chart.js": "4.6.1",
+    "chartjs-plugin-annotation": "3.1.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "16.0.3",
+    "@rollup/plugin-replace": "6.0.3",
+    "@rollup/plugin-terser": "1.0.2",
+    "rollup": "4.68.8"
+  }
+}

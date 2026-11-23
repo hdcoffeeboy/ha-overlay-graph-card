@@ -1,7 +1,7 @@
 # overlay-graph-card — Status & Hand-over
 
-**File:** `overlay-graph-card.js` (single file, ~1060 lines, vanilla JS custom element, no build step)
-**Version constant:** `CARD_VERSION = "1.0.0"` (not bumped during development; bump on first GitHub release)
+**Source:** `src/overlay-graph-card.js` (vanilla JS custom element). **Build:** `npm run build` (Rollup) → `dist/overlay-graph-card.js` (git-ignored; Chart.js + annotation plugin bundled).
+**Version:** set in `package.json`; injected into `CARD_VERSION` at build time.
 **Status:** Working, in live testing (author + one other tester). No known open bugs.
 
 ## Purpose
@@ -10,7 +10,7 @@ Home Assistant Lovelace custom card, similar to `mini-graph-card`, that plots a 
 
 ## Installation
 
-1. Copy to `<config>/www/overlay-graph-card.js`
+1. `npm run build`, then copy `dist/overlay-graph-card.js` to `<config>/www/`
 2. Add as a Lovelace resource: `/local/overlay-graph-card.js`, type `module`
 3. When updating, bump the query string (`?v=N`) to bypass browser cache
 
@@ -19,7 +19,7 @@ Home Assistant Lovelace custom card, similar to `mini-graph-card`, that plots a 
 | Area | Location (approx. line) | Notes |
 |---|---|---|
 | `PALETTES`, `palette(graphColor, overlayColor, opacity)` | 45–70 | 7 named colours. Graph and overlay colours resolved independently; overlay falls back to graph colour. |
-| `loadChartJs()` | 71–97 | Loads Chart.js 4.4.1 and chartjs-plugin-annotation 3.0.1 from cdnjs at runtime. |
+| Chart.js imports + `Chart.register(...)` | top of file | Bundled Chart.js 4.6.1 + chartjs-plugin-annotation 3.1.0; only needed components registered. |
 | `fetchHistory()` | 98 | REST `history/period/...` via `hass.callApi`. Used for primary (when stats off) and all overlays. |
 | `fetchStatistics()` | 116 | WebSocket `recorder/statistics_during_period`. Bucket: 5minute (≤48 h), hour (≤168 h), else day. Returns null if entity has no statistics. |
 | `resampleToPoints()` / `resampleStats()` | 143 / 168 | Resample onto a uniform 96-point grid (`_POINTS`). **Primary series only.** |
@@ -143,10 +143,11 @@ Prioritised, none started:
 
 ## Working notes
 
-- A GitHub or Claude Code session should work directly from `overlay-graph-card.js`; there is no build step or dependency manifest. Chart.js and the annotation plugin load from cdnjs at runtime, so HA needs outbound access to `cdnjs.cloudflare.com`.
-- Local syntax check: `node --input-type=module < overlay-graph-card.js` (expect only `ReferenceError: HTMLElement is not defined`).
+- Work in `src/`; run `npm run build` and copy `dist/overlay-graph-card.js` to HA `<config>/www/` for live testing (bump `?v=` on the resource).
+- No runtime network access needed (CDN loading removed 2026-11-23).
+- Line numbers in the Architecture table are approximate and pre-date the refactor.
 
-## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (live-tested OK, ready to merge)
+## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (merged via PR #1)
 
 Fixed (code-verified with jsc unit checks; **not yet tested in live HA**):
 
@@ -182,8 +183,8 @@ Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
 ## HACS release plan
 
 1. ~~Repo + LICENSE~~ (private for now; make public before HACS)
-2. ~~Fix initial bugs~~ ~~live-test~~ → merge `fix/initial-bugs`
-3. Bundle Chart.js + annotation plugin (npm + Rollup → `dist/overlay-graph-card.js`) instead of runtime CDN.
+2. ~~Fix initial bugs~~ ~~live-test~~ ~~merge~~
+3. ~~Bundle Chart.js~~ (branch `build/bundle-chartjs`, awaiting live test)
 4. `hacs.json` (`name`, `filename: overlay-graph-card.js`, `render_readme: true`), README screenshots.
 5. GitHub Actions: HACS validation + build-and-attach release asset on tag.
 6. Repo description, topics, issues enabled; tag `v1.0.0`.

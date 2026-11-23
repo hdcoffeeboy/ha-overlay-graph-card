@@ -1,43 +1,23 @@
 /**
  * overlay-graph-card
- * A Home Assistant Lovelace card that plots a primary sensor and shades
- * background regions based on a secondary binary or numeric sensor.
+ * Home Assistant Lovelace card that plots a sensor's history and shades
+ * background regions while one or more other entities are active.
  *
- * Installation: copy to <config>/www/overlay-graph-card.js
- * Register in configuration.yaml (or via UI Resources):
- *   lovelace:
- *     resources:
- *       - url: /local/overlay-graph-card.js
- *         type: module
- *
- * Example config:
- *   type: custom:overlay-graph-card
- *   entity: sensor.garden_moisture
- *   name: Garden soil moisture
- *   unit: "%"
- *   hours_to_show: 24
- *   overlay:
- *     entity: binary_sensor.irrigation_valve
- *     color: teal        # teal | blue | amber | coral | purple | green | red | auto
- *     label: Irrigation active
- *     opacity: 0.22      # optional, default 0.22
- *     threshold: 0.1     # numeric sensors only – treat as active above this value
- *   color: teal             # graph line/fill colour (teal | blue | amber | coral | purple | green | red)
- *   graph: line            # line | bar
- *   smoothing: true
- *   show:
- *     statistics: false    # show min/max band + mean line
- *     statistics_opacity: 0.18  # opacity of the min/max band (0–1)
- *     extremes: false
- *   overlay:
- *     entity: binary_sensor.irrigation_valve
- *     color: amber         # defaults to graph color if omitted
- *     opacity: 0.35
- *     label: Irrigation active
- *     threshold: 0.1       # numeric sensors only
+ * Source file – build with `npm run build` to produce
+ * dist/overlay-graph-card.js. Configuration: see README.md.
  */
 
-const CARD_VERSION = "1.0.0";
+import {
+  Chart,
+  LineController, BarController,
+  LineElement, BarElement, PointElement,
+  CategoryScale, LinearScale,
+  Filler, Tooltip,
+} from "chart.js";
+import annotationPlugin from "chartjs-plugin-annotation";
+
+// Replaced at build time from package.json
+const CARD_VERSION = __CARD_VERSION__;
 
 // ---------------------------------------------------------------------------
 // Color palettes – one per named theme
@@ -66,56 +46,17 @@ function palette(graphColor, overlayColor, overlayOpacity = 0.22) {
 }
 
 // ---------------------------------------------------------------------------
-// Chart.js CDN – loaded once
+// Chart.js – bundled at build time (see rollup.config.mjs). Only the parts
+// this card uses are registered, on a private instance that never touches
+// window.Chart, so other cards' Chart.js versions can't interfere.
 // ---------------------------------------------------------------------------
-const CHARTJS_URL =
-  "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js";
-const ANNOTATION_URL =
-  "https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/3.0.1/chartjs-plugin-annotation.min.js";
-
-let chartJsReady = null;
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(s);
-  });
-}
-
-// Private Chart.js v4 instance. Other cards may put a different Chart.js
-// version (e.g. v2) on window.Chart, so we never use the global directly:
-// load our own copy, keep a reference, then restore whatever was there.
-let ChartLib = null;
-
-function loadChartJs() {
-  if (chartJsReady) return chartJsReady;
-  chartJsReady = (async () => {
-    const prev = window.Chart;
-    try {
-      await loadScript(CHARTJS_URL);
-      const ours = window.Chart;
-      if (!ours || !String(ours.version || "").startsWith("4.")) {
-        throw new Error("Chart.js v4 did not initialise");
-      }
-      // The annotation UMD build registers itself on window.Chart
-      await loadScript(ANNOTATION_URL);
-      if (!ours.registry.plugins.get("annotation")) {
-        throw new Error("chartjs-plugin-annotation did not register");
-      }
-      ChartLib = ours;
-    } finally {
-      if (prev === undefined) delete window.Chart;
-      else window.Chart = prev;
-    }
-  })().catch((e) => {
-    chartJsReady = null; // allow a retry on the next refresh
-    throw e;
-  });
-  return chartJsReady;
-}
+Chart.register(
+  LineController, BarController,
+  LineElement, BarElement, PointElement,
+  CategoryScale, LinearScale,
+  Filler, Tooltip,
+  annotationPlugin,
+);
 
 // ---------------------------------------------------------------------------
 // Overlay "active" evaluation – single source of truth
@@ -788,7 +729,6 @@ class OverlayGraphCard extends HTMLElement {
   }
 
   async _drawChart(labels, primaryData, overlayResults, windowStart, windowEnd) {
-    await loadChartJs();
     // The card may have been detached or re-rendered while awaiting
     if (!this.isConnected) return;
     const canvas = this.shadowRoot.getElementById("ogc");
@@ -815,7 +755,6 @@ class OverlayGraphCard extends HTMLElement {
     const pal = palette(graphColor, graphColor, 0.35);
 
     // Annotation plugin check
-    if (!ChartLib) return;
 
     // Support both raw array and stats object
     const isStats = primaryData && !Array.isArray(primaryData);
@@ -1042,7 +981,7 @@ class OverlayGraphCard extends HTMLElement {
       this._chart.options = chartConfig.options;
       this._chart.update("none");
     } else {
-      this._chart = new ChartLib(canvas, chartConfig);
+      this._chart = new Chart(canvas, chartConfig);
     }
   }
 
