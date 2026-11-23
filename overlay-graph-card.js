@@ -85,21 +85,31 @@ function loadScript(src) {
   });
 }
 
-function hasAnnotationPlugin() {
-  try {
-    return !!(window.Chart && window.Chart.registry.plugins.get("annotation"));
-  } catch (_) {
-    return false;
-  }
-}
+// Private Chart.js v4 instance. Other cards may put a different Chart.js
+// version (e.g. v2) on window.Chart, so we never use the global directly:
+// load our own copy, keep a reference, then restore whatever was there.
+let ChartLib = null;
 
 function loadChartJs() {
   if (chartJsReady) return chartJsReady;
   chartJsReady = (async () => {
-    // Reuse a Chart.js instance another card may already have loaded
-    if (!window.Chart) await loadScript(CHARTJS_URL);
-    if (!hasAnnotationPlugin()) await loadScript(ANNOTATION_URL);
-    if (!window.Chart) throw new Error("Chart.js did not initialise");
+    const prev = window.Chart;
+    try {
+      await loadScript(CHARTJS_URL);
+      const ours = window.Chart;
+      if (!ours || !String(ours.version || "").startsWith("4.")) {
+        throw new Error("Chart.js v4 did not initialise");
+      }
+      // The annotation UMD build registers itself on window.Chart
+      await loadScript(ANNOTATION_URL);
+      if (!ours.registry.plugins.get("annotation")) {
+        throw new Error("chartjs-plugin-annotation did not register");
+      }
+      ChartLib = ours;
+    } finally {
+      if (prev === undefined) delete window.Chart;
+      else window.Chart = prev;
+    }
   })().catch((e) => {
     chartJsReady = null; // allow a retry on the next refresh
     throw e;
@@ -228,16 +238,69 @@ function resampleStats(rows, count, windowStart, windowEnd) {
   return { means, mins, maxs };
 }
 
-function generateLabels(windowStart, windowEnd, count, locale) {
+// Locale + 12/24 h preference from the HA user profile
+function localeOpts(hass) {
+  const loc = (hass && hass.locale) || {};
+  const opts = { locale: loc.language || [] };
+  if (loc.time_format === "12") opts.hour12 = true;
+  else if (loc.time_format === "24") opts.hour12 = false;
+  return opts;
+}
+
+function fmtDate(t, lo, fmt) {
+  const o = { ...fmt };
+  if (lo.hour12 !== undefined && (fmt.hour || fmt.minute)) o.hour12 = lo.hour12;
+  try {
+    return new Date(t).toLocaleString(lo.locale, o);
+  } catch (_) {
+    return new Date(t).toLocaleString([], o);
+  }
+}
+
+// Tooltip titles, one per grid point
+function generateLabels(windowStart, windowEnd, count, lo) {
   const hours = (windowEnd - windowStart) / 3600000;
   const fmt = hours <= 24
     ? { hour: "2-digit", minute: "2-digit" }
-    : hours <= 168
-      ? { weekday: "short", hour: "2-digit", minute: "2-digit" }
-      : { day: "numeric", month: "short" };
+    : { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" };
   return Array.from({ length: count }, (_, i) =>
-    new Date(gridTime(i, count, windowStart, windowEnd)).toLocaleString(locale || [], fmt)
+    fmtDate(gridTime(i, count, windowStart, windowEnd), lo, fmt)
   );
+}
+
+// X-axis ticks at round local clock times. Picks the smallest "nice" step
+// that keeps the tick count ≤ maxTicks. Returns [{pos, label}] where pos is
+// in the chart's index space (0 … points-1).
+const TICK_STEPS_MIN = [5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440, 2880, 10080, 20160];
+
+function buildTimeTicks(windowStart, windowEnd, points, maxTicks, lo) {
+  const spanMin = (windowEnd - windowStart) / 60000;
+  const step = TICK_STEPS_MIN.find((s) => spanMin / s <= maxTicks) || TICK_STEPS_MIN[TICK_STEPS_MIN.length - 1];
+  const multiDay = spanMin > 1440;
+  // Start from local midnight on the day the window starts (week steps: Monday)
+  const d = new Date(windowStart);
+  d.setHours(0, 0, 0, 0);
+  if (step >= 10080) d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const ticks = [];
+  while (d.getTime() <= windowEnd) {
+    const t = d.getTime();
+    if (t >= windowStart) {
+      const midnight = d.getHours() === 0 && d.getMinutes() === 0;
+      let label;
+      if (!multiDay || !midnight) {
+        label = fmtDate(t, lo, { hour: "2-digit", minute: "2-digit" });
+      } else if (spanMin <= 7 * 1440) {
+        label = fmtDate(t, lo, { weekday: "short" });
+      } else {
+        label = fmtDate(t, lo, { day: "numeric", month: "short" });
+      }
+      ticks.push({ pos: ((t - windowStart) / (windowEnd - windowStart)) * (points - 1), label });
+    }
+    // Step in local time so DST changes keep ticks on round hours
+    if (step >= 1440) d.setDate(d.getDate() + step / 1440);
+    else d.setMinutes(d.getMinutes() + step);
+  }
+  return ticks;
 }
 
 function escapeHtml(s) {
@@ -706,7 +769,7 @@ class OverlayGraphCard extends HTMLElement {
         }))
       );
 
-      const labels = generateLabels(windowStart, windowEnd, this._POINTS, hass.locale && hass.locale.language);
+      const labels = generateLabels(windowStart, windowEnd, this._POINTS, localeOpts(hass));
       await this._drawChart(labels, primaryData, overlayResults, windowStart, windowEnd);
       this._showError(null);
     } catch (e) {
@@ -736,6 +799,7 @@ class OverlayGraphCard extends HTMLElement {
     }
     const c = this._config;
     const unit = this._unit || "";
+    const locale = localeOpts(this._hass);
 
     const graphColor = c.color || "teal";
 
@@ -751,7 +815,7 @@ class OverlayGraphCard extends HTMLElement {
     const pal = palette(graphColor, graphColor, 0.35);
 
     // Annotation plugin check
-    if (!window.Chart) return;
+    if (!ChartLib) return;
 
     // Support both raw array and stats object
     const isStats = primaryData && !Array.isArray(primaryData);
@@ -943,11 +1007,19 @@ class OverlayGraphCard extends HTMLElement {
         },
         scales: {
           x: {
+            // Replace the per-point category ticks with ticks at round
+            // clock times (e.g. every 15 min, hourly, 6-hourly, midnight).
+            afterBuildTicks: (scale) => {
+              const maxTicks = Math.max(2, Math.floor((scale.width || scale.maxWidth || 300) / 60));
+              this._xTicks = buildTimeTicks(windowStart, windowEnd, this._POINTS, maxTicks, locale);
+              scale.ticks = this._xTicks.map((t) => ({ value: t.pos }));
+            },
             ticks: {
               color: tickColor,
               font: { size: 10 },
-              maxTicksLimit: 8,
+              autoSkip: false,
               maxRotation: 0,
+              callback: (_v, i) => (this._xTicks && this._xTicks[i] ? this._xTicks[i].label : ""),
             },
             grid: { color: gridColor },
           },
@@ -970,7 +1042,7 @@ class OverlayGraphCard extends HTMLElement {
       this._chart.options = chartConfig.options;
       this._chart.update("none");
     } else {
-      this._chart = new window.Chart(canvas, chartConfig);
+      this._chart = new ChartLib(canvas, chartConfig);
     }
   }
 

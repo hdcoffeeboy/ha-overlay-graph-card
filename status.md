@@ -146,7 +146,7 @@ Prioritised, none started:
 - A GitHub or Claude Code session should work directly from `overlay-graph-card.js`; there is no build step or dependency manifest. Chart.js and the annotation plugin load from cdnjs at runtime, so HA needs outbound access to `cdnjs.cloudflare.com`.
 - Local syntax check: `node --input-type=module < overlay-graph-card.js` (expect only `ReferenceError: HTMLElement is not defined`).
 
-## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs`
+## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (pushed, awaiting live test)
 
 Fixed (code-verified with jsc unit checks; **not yet tested in live HA**):
 
@@ -165,12 +165,17 @@ Fixed (code-verified with jsc unit checks; **not yet tested in live HA**):
 
 Notes: Node is not installed; syntax check with `/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc -m overlay-graph-card.js` (expect only `HTMLElement` error).
 
+Live test round 1 (2026-11-23): navigation, theme switch, 72 h weekday labels OK. Failed: no overlays, squashed graph, cluttered rotated x labels, error `e.scales.xAxes.concat`.
+- **Cause:** another dashboard card loads Chart.js **v2** onto `window.Chart`; the card reused it. **Fix:** card now loads its own v4 copy + annotation plugin, keeps a private `ChartLib` reference and restores the previous `window.Chart`. (Bundling in step 3 removes this juggling entirely.)
+- **X axis:** new `buildTimeTicks()` places ticks at round local times (5 min … 2 weeks steps, ~1 tick per 60 px); midnight shows weekday (≤7 d) or date. Honours HA profile 12/24 h setting via `localeOpts(hass)`.
+
 ### Live HA test checklist before merge
 
 - Slow-changing sensor (no change for hours): line reaches right edge and aligns with overlays
 - Tap more-info, hold toggle with per-action `entity`, navigate
 - Navigate away and back; dark/light theme switch
 - `hours_to_show: 72` labels
+- Round 2: overlays visible incl. currently-active one at right edge; no console error; other Chart.js-v2 card on same dashboard still works; tick spacing at 6 h / 24 h / 72 h; bar mode grid alignment
 
 ## HACS release plan
 
