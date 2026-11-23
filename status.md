@@ -87,7 +87,7 @@ show:
 ### Entity ID / label resolution
 
 - Title: `name` → `friendly_name` attribute → entity ID
-- Line under title: `secondary_info` if set; else entity ID unless `show.entity_id: false` or `show.statistics: true`; else nothing
+- Line under title: `secondary_info` if set; else entity ID unless `show.entity_id: false`; else nothing (statistics no longer hides it, 2026-11-23)
 - Legend primary label: `"Mean"` when statistics on; otherwise `name` → `secondary_info` → entity ID
 
 ## Decisions and rationale

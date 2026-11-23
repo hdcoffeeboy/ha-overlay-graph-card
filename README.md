@@ -128,7 +128,7 @@ An overlay is active when its state is in `active_state` if set; otherwise above
 |---|---|---|
 | `name` | `true` | Title |
 | `icon` | `true` | Icon |
-| `entity_id` | `true` | Entity ID under the title (hidden when `secondary_info` is set or `statistics` is on) |
+| `entity_id` | `true` | Entity ID under the title (hidden when `secondary_info` is set) |
 | `current_value` | `true` | Current value and last-changed time |
 | `legend` | `true` | Legend |
 | `extremes` | `false` | Min and max values under the graph |
