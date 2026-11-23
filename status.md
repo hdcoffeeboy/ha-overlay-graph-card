@@ -29,7 +29,7 @@ Home Assistant Lovelace custom card, similar to `mini-graph-card`, that plots a 
 | `autoColor()`, `ON_OFF_DOMAINS` | 317–352 | Picks a colour from domain / entity name when `color: auto`. |
 | `OverlayGraphCard` | 353 | Main element. `setConfig` → `_render` (DOM skeleton, legend, tap/hold) → `hass` setter (30 s throttle) → `_updateData` → `_drawChart`. |
 | `_handleAction()` | 554 | Tap/hold action dispatcher. |
-| `OverlayGraphCardEditor` | 938 | **Placeholder only** — displays a YAML example, no GUI form. |
+| `OverlayGraphCardEditor` | `src/editor.js` | Visual editor on HA `ha-form` (entity/icon/ui_action selectors) + per-overlay expansion panels (add, remove, reorder). Shared defaults in `src/const.js`. |
 
 ### Data flow
 
@@ -109,7 +109,7 @@ show:
 7. **`hass.callService &&` guard in the `more-info` case** is meaningless and should be removed.
 8. **Throttle is a flat 30 s**, independent of `hours_to_show`.
 9. **`fetchStatistics` / `statistics_during_period` assumes the recorder WebSocket API shape for the tested HA version**; verify the `types` parameter on older versions.
-10. **Editor is a stub.** No GUI.
+10. ~~Editor is a stub~~ — visual editor added (branch `feat/visual-editor`).
 11. **`documentationURL` in `window.customCards` is a placeholder** (`https://github.com/your-repo/overlay-graph-card`).
 12. **Unverified:** the file has been syntax-checked with Node (the only expected error there is `HTMLElement is not defined`), but runtime behaviour has only been verified by Tim's live HA testing, not by automated tests.
 
@@ -179,6 +179,24 @@ Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
 - Navigate away and back; dark/light theme switch
 - `hours_to_show: 72` labels
 - Round 2: overlays visible incl. currently-active one at right edge; no console error; other Chart.js-v2 card on same dashboard still works; tick spacing at 6 h / 24 h / 72 h; bar mode grid alignment
+
+## Session 2026-11-23 (cont.) — branch `feat/visual-editor` (awaiting live test)
+
+- `src/editor.js`: main form (entity, name, icon, subtitle, unit, hours, graph type, colour, smoothing slider), "Display" (show.*) and "Interactions" (tap/hold via HA `ui_action`) sections, overlay list with add/remove/move.
+- Editor writes minimal YAML: defaults omitted, unknown keys preserved, `smoothing: true` kept unless the slider moves. Single-object `overlay:` becomes a list once edited.
+- Active states edited as comma-separated text (`heating, cooling` → list).
+- ha-form is lazy-loaded by HA; `ensureHaElements()` forces it by opening a built-in card editor.
+- Card fixes: `icon` option was ignored (now applied); overlays without an entity are skipped (avoids an unfiltered history fetch while adding one in the editor). `preview: true` in card picker.
+- Mapping logic unit-tested in Node; UI untested.
+
+### Editor live test checklist
+
+- Add card from picker: preview renders, editor opens without errors
+- Edit each main field; YAML view matches and stays minimal
+- Display and Interactions sections; tap/hold action editors
+- Add overlay → pick entity → shading appears; reorder; remove; panel open state survives edits
+- Type `heating, cooling` in Active states without characters being eaten
+- Existing YAML card (single-object overlay, `smoothing: true`) opens and round-trips unchanged until edited
 
 ## HACS release plan
 
