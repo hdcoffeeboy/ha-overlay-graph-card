@@ -201,10 +201,16 @@ Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
 
 ## HACS release plan
 
-1. ~~Repo + LICENSE~~ (private for now; make public before HACS)
-2. ~~Fix initial bugs~~ ~~live-test~~ ~~merge~~
-3. ~~Bundle Chart.js~~ (branch `build/bundle-chartjs`, awaiting live test)
-4. `hacs.json` (`name`, `filename: overlay-graph-card.js`, `render_readme: true`), README screenshots.
-5. GitHub Actions: HACS validation + build-and-attach release asset on tag.
-6. Repo description, topics, issues enabled; tag `v1.0.0`.
-7. Use as custom repository first; then PR to `hacs/default`.
+1. ~~Repo + LICENSE~~ (private until release)
+2. ~~Fix initial bugs~~ (PR #1)
+3. ~~Bundle Chart.js~~ (PR #2) · ~~Visual editor~~ (PR #3)
+4. Packaging — branch `chore/hacs-packaging`:
+   - ~~`hacs.json`~~ (`filename: overlay-graph-card.js`, `render_readme`; no minimum HA version set yet)
+   - ~~Workflows~~: `build.yml` (CI build on push/PR, artifact upload), `validate.yml` (hacs/action, weekly + push/PR), `release.yml` (on release published: version from tag → build → attach asset)
+   - ~~README~~: features, HACS + manual install, option tables, release steps
+   - **TODO (user):** screenshot `images/card.png` (referenced in README); optional editor screenshot
+5. Repo settings before public: description, topics (`home-assistant`, `hacs`, `lovelace`, `custom-card`, `dashboard`), issues enabled.
+6. Make public → publish release `v1.0.0` → install via HACS custom repository and test.
+7. PR to `hacs/default` (needs ≥1 release, passing HACS action).
+
+Notes: HACS validation may fail while the repo is private or lacks description/topics; that is expected until step 5.
