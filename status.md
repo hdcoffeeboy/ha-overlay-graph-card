@@ -109,7 +109,7 @@ show:
 7. **`hass.callService &&` guard in the `more-info` case** is meaningless and should be removed.
 8. **Throttle is a flat 30 s**, independent of `hours_to_show`.
 9. **`fetchStatistics` / `statistics_during_period` assumes the recorder WebSocket API shape for the tested HA version**; verify the `types` parameter on older versions.
-10. ~~Editor is a stub~~ — visual editor added (branch `feat/visual-editor`).
+10. ~~Editor is a stub~~ — visual editor added and live-tested.
 11. **`documentationURL` in `window.customCards` is a placeholder** (`https://github.com/your-repo/overlay-graph-card`).
 12. **Unverified:** the file has been syntax-checked with Node (the only expected error there is `HTMLElement is not defined`), but runtime behaviour has only been verified by Tim's live HA testing, not by automated tests.
 
@@ -180,7 +180,7 @@ Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
 - `hours_to_show: 72` labels
 - Round 2: overlays visible incl. currently-active one at right edge; no console error; other Chart.js-v2 card on same dashboard still works; tick spacing at 6 h / 24 h / 72 h; bar mode grid alignment
 
-## Session 2026-11-23 (cont.) — branch `feat/visual-editor` (awaiting live test)
+## Session 2026-11-23 (cont.) — branch `feat/visual-editor` (live-tested OK, ready to merge)
 
 - `src/editor.js`: main form (entity, name, icon, subtitle, unit, hours, graph type, colour, smoothing slider), "Display" (show.*) and "Interactions" (tap/hold via HA `ui_action`) sections, overlay list with add/remove/move.
 - Editor writes minimal YAML: defaults omitted, unknown keys preserved, `smoothing: true` kept unless the slider moves. Single-object `overlay:` becomes a list once edited.
