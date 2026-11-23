@@ -146,7 +146,7 @@ Prioritised, none started:
 - A GitHub or Claude Code session should work directly from `overlay-graph-card.js`; there is no build step or dependency manifest. Chart.js and the annotation plugin load from cdnjs at runtime, so HA needs outbound access to `cdnjs.cloudflare.com`.
 - Local syntax check: `node --input-type=module < overlay-graph-card.js` (expect only `ReferenceError: HTMLElement is not defined`).
 
-## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (pushed, awaiting live test)
+## Session 2026-11-23 (Claude Code) — branch `fix/initial-bugs` (live-tested OK, ready to merge)
 
 Fixed (code-verified with jsc unit checks; **not yet tested in live HA**):
 
@@ -169,6 +169,8 @@ Live test round 1 (2026-11-23): navigation, theme switch, 72 h weekday labels OK
 - **Cause:** another dashboard card loads Chart.js **v2** onto `window.Chart`; the card reused it. **Fix:** card now loads its own v4 copy + annotation plugin, keeps a private `ChartLib` reference and restores the previous `window.Chart`. (Bundling in step 3 removes this juggling entirely.)
 - **X axis:** new `buildTimeTicks()` places ticks at round local times (5 min … 2 weeks steps, ~1 tick per 60 px); midnight shows weekday (≤7 d) or date. Honours HA profile 12/24 h setting via `localeOpts(hass)`.
 
+Live test round 2 (2026-11-23): all checks pass; other chart cards unaffected.
+
 ### Live HA test checklist before merge
 
 - Slow-changing sensor (no change for hours): line reaches right edge and aligns with overlays
@@ -180,7 +182,7 @@ Live test round 1 (2026-11-23): navigation, theme switch, 72 h weekday labels OK
 ## HACS release plan
 
 1. ~~Repo + LICENSE~~ (private for now; make public before HACS)
-2. ~~Fix initial bugs~~ → live-test, merge `fix/initial-bugs`
+2. ~~Fix initial bugs~~ ~~live-test~~ → merge `fix/initial-bugs`
 3. Bundle Chart.js + annotation plugin (npm + Rollup → `dist/overlay-graph-card.js`) instead of runtime CDN.
 4. `hacs.json` (`name`, `filename: overlay-graph-card.js`, `render_readme: true`), README screenshots.
 5. GitHub Actions: HACS validation + build-and-attach release asset on tag.
