@@ -75,31 +75,81 @@ const ANNOTATION_URL =
 
 let chartJsReady = null;
 
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+function hasAnnotationPlugin() {
+  try {
+    return !!(window.Chart && window.Chart.registry.plugins.get("annotation"));
+  } catch (_) {
+    return false;
+  }
+}
+
 function loadChartJs() {
   if (chartJsReady) return chartJsReady;
-  chartJsReady = new Promise((resolve) => {
-    if (window.Chart && window.Chart.Annotation) { resolve(); return; }
-    const s1 = document.createElement("script");
-    s1.src = CHARTJS_URL;
-    s1.onload = () => {
-      const s2 = document.createElement("script");
-      s2.src = ANNOTATION_URL;
-      s2.onload = resolve;
-      document.head.appendChild(s2);
-    };
-    document.head.appendChild(s1);
+  chartJsReady = (async () => {
+    // Reuse a Chart.js instance another card may already have loaded
+    if (!window.Chart) await loadScript(CHARTJS_URL);
+    if (!hasAnnotationPlugin()) await loadScript(ANNOTATION_URL);
+    if (!window.Chart) throw new Error("Chart.js did not initialise");
+  })().catch((e) => {
+    chartJsReady = null; // allow a retry on the next refresh
+    throw e;
   });
   return chartJsReady;
 }
 
 // ---------------------------------------------------------------------------
+// Overlay "active" evaluation – single source of truth
+// Precedence: active_state → threshold → built-in truthy set; invert last.
+// ---------------------------------------------------------------------------
+const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
+
+function makeActiveTest(ov) {
+  const activeStates = ov.active_state != null
+    ? new Set((Array.isArray(ov.active_state) ? ov.active_state : [ov.active_state]).map(String))
+    : null;
+  const threshold = ov.threshold != null ? Number(ov.threshold) : null;
+  return (state) => {
+    let result;
+    if (activeStates) {
+      result = activeStates.has(state);
+    } else if (threshold != null) {
+      const v = parseFloat(state);
+      result = !isNaN(v) && v > threshold;
+    } else {
+      result = TRUTHY.has(state);
+    }
+    return ov.invert ? !result : result;
+  };
+}
+
+// Is the overlay active at time t (ms)? states must be sorted by last_changed.
+function activeAt(states, isActive, t) {
+  let active = false;
+  for (let s = 0; s < states.length; s++) {
+    if (new Date(states[s].last_changed).getTime() > t) break;
+    active = isActive(states[s].state);
+  }
+  return active;
+}
+
+// ---------------------------------------------------------------------------
 // History fetching helpers
 // ---------------------------------------------------------------------------
-async function fetchHistory(hass, entityId, hoursToShow) {
-  const end = new Date();
-  const start = new Date(end - hoursToShow * 3600 * 1000);
+async function fetchHistory(hass, entityId, windowStart, windowEnd) {
+  const start = new Date(windowStart);
+  const end = new Date(windowEnd);
   const url =
-    `history/period/${start.toISOString()}?filter_entity_id=${entityId}` +
+    `history/period/${start.toISOString()}?filter_entity_id=${encodeURIComponent(entityId)}` +
     `&end_time=${end.toISOString()}&minimal_response=true&no_attributes=true`;
   try {
     const result = await hass.callApi("GET", url);
@@ -113,9 +163,10 @@ async function fetchHistory(hass, entityId, hoursToShow) {
 // Statistics fetching (recorder – gives min/max/mean per bucket)
 // Falls back gracefully if the entity has no long-term statistics recorded.
 // ---------------------------------------------------------------------------
-async function fetchStatistics(hass, entityId, hoursToShow) {
-  const end = new Date();
-  const start = new Date(end - hoursToShow * 3600 * 1000);
+async function fetchStatistics(hass, entityId, windowStart, windowEnd) {
+  const start = new Date(windowStart);
+  const end = new Date(windowEnd);
+  const hoursToShow = (windowEnd - windowStart) / 3600000;
   // Choose bucket size: ≤48 h → 5 min, ≤7 days → hour, else day
   const period = hoursToShow <= 48 ? "5minute" : hoursToShow <= 168 ? "hour" : "day";
   try {
@@ -140,54 +191,59 @@ async function fetchStatistics(hass, entityId, hoursToShow) {
   }
 }
 
-function resampleToPoints(states, count, isNumeric) {
+// Time of grid point i on a uniform grid spanning [windowStart, windowEnd]
+function gridTime(i, count, windowStart, windowEnd) {
+  return windowStart + (i / (count - 1)) * (windowEnd - windowStart);
+}
+
+// Sample a numeric state history onto the window grid. Each state holds until
+// the next change (or until now); points before the first record are null.
+function resampleToPoints(states, count, windowStart, windowEnd) {
   if (!states.length) return Array(count).fill(null);
-  const first = new Date(states[0].last_changed).getTime();
-  const last = new Date(states[states.length - 1].last_changed).getTime();
-  const step = (last - first) / (count - 1) || 1;
+  const times = states.map((s) => new Date(s.last_changed).getTime());
   const out = [];
-  let si = 0;
+  let si = -1;
   for (let i = 0; i < count; i++) {
-    const t = first + i * step;
-    while (si < states.length - 1 && new Date(states[si + 1].last_changed).getTime() <= t) si++;
-    const v = states[si].state;
-    if (isNumeric) {
-      out.push(isNaN(parseFloat(v)) ? null : parseFloat(v));
-    } else {
-      // on/off: binary_sensor, switch, input_boolean, automation
-      // open/closed: valve, cover
-      // locked/unlocked: lock
-      // active/idle/standby: various
-      const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
-      out.push(TRUTHY.has(v) ? 1 : 0);
-    }
+    const t = gridTime(i, count, windowStart, windowEnd);
+    while (si < states.length - 1 && times[si + 1] <= t) si++;
+    if (si < 0) { out.push(null); continue; }
+    const v = parseFloat(states[si].state);
+    out.push(isNaN(v) ? null : v);
   }
   return out;
 }
 
-function resampleStats(rows, count, hoursToShow) {
-  // rows: [{t, mean, min, max}] – may be sparse; interpolate onto uniform grid
-  const end = Date.now();
-  const start = end - hoursToShow * 3600 * 1000;
+function resampleStats(rows, count, windowStart, windowEnd) {
+  // rows: [{t, mean, min, max}] – may be sparse; step-sample onto uniform grid
   const means = [], mins = [], maxs = [];
-  let ri = 0;
+  let ri = -1;
   for (let i = 0; i < count; i++) {
-    const t = start + (i / (count - 1)) * (end - start);
+    const t = gridTime(i, count, windowStart, windowEnd);
     while (ri < rows.length - 1 && rows[ri + 1].t <= t) ri++;
-    means.push(rows[ri].mean);
-    mins.push(rows[ri].min);
-    maxs.push(rows[ri].max);
+    const r = ri >= 0 ? rows[ri] : null;
+    means.push(r ? r.mean : null);
+    mins.push(r ? r.min : null);
+    maxs.push(r ? r.max : null);
   }
   return { means, mins, maxs };
 }
 
-function generateLabels(hoursToShow, count) {
-  const end = Date.now();
-  const start = end - hoursToShow * 3600 * 1000;
-  return Array.from({ length: count }, (_, i) => {
-    const t = new Date(start + (i / (count - 1)) * (end - start));
-    return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  });
+function generateLabels(windowStart, windowEnd, count, locale) {
+  const hours = (windowEnd - windowStart) / 3600000;
+  const fmt = hours <= 24
+    ? { hour: "2-digit", minute: "2-digit" }
+    : hours <= 168
+      ? { weekday: "short", hour: "2-digit", minute: "2-digit" }
+      : { day: "numeric", month: "short" };
+  return Array.from({ length: count }, (_, i) =>
+    new Date(gridTime(i, count, windowStart, windowEnd)).toLocaleString(locale || [], fmt)
+  );
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
 }
 
 // ---------------------------------------------------------------------------
@@ -230,29 +286,11 @@ function smoothArray(data, strength) {
 // xMin/xMax are expressed in the label-index space (0 … POINTS-1).
 // A minimum visual width of MIN_FRAC * POINTS prevents sub-pixel spans.
 // ---------------------------------------------------------------------------
-function buildAnnotationsFromStates(ovStates, windowStart, windowEnd, pal, points, threshold, invert = false, activeState = null) {
+function buildAnnotationsFromStates(ovStates, windowStart, windowEnd, pal, points, isActive) {
   if (!ovStates || !ovStates.length) return {};
   const span = windowEnd - windowStart || 1;
   const MIN_FRAC = 0.02;
   const minWidth = MIN_FRAC * points;
-
-  const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
-  // active_state: string or array of strings that count as active
-  const activeStates = activeState
-    ? new Set(Array.isArray(activeState) ? activeState : [activeState])
-    : null;
-
-  function isActive(state) {
-    let result;
-    if (activeStates) {
-      result = activeStates.has(state);
-    } else if (threshold != null) {
-      result = !isNaN(parseFloat(state)) && parseFloat(state) > threshold;
-    } else {
-      result = TRUTHY.has(state);
-    }
-    return invert ? !result : result;
-  }
 
   // Convert timestamps → fractional axis positions
   function toX(isoOrMs) {
@@ -362,16 +400,19 @@ class OverlayGraphCard extends HTMLElement {
     this._POINTS = 96;
   }
 
-  static getConfigElement() {
-    return document.createElement("overlay-graph-card-editor");
-  }
-
-  static getStubConfig() {
+  static getStubConfig(hass) {
+    const ids = hass ? Object.keys(hass.states) : [];
+    const sensor = ids.find((id) =>
+      id.startsWith("sensor.") &&
+      !isNaN(parseFloat(hass.states[id].state)) &&
+      hass.states[id].attributes.unit_of_measurement
+    ) || "sensor.example";
+    const overlay = ids.find((id) => id.startsWith("binary_sensor.")) || "binary_sensor.example";
     return {
-      entity: "sensor.example",
+      entity: sensor,
       hours_to_show: 24,
       graph: "line",
-      overlay: { entity: "valve.example", color: "auto" },
+      overlay: [{ entity: overlay, color: "auto" }],
     };
   }
 
@@ -416,11 +457,27 @@ class OverlayGraphCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    if (!this.isConnected) return;
     const now = Date.now();
     // throttle: refresh at most every 30 s
     if (!this._lastFetch || now - this._lastFetch > 30000) {
       this._lastFetch = now;
       this._updateData();
+    }
+  }
+
+  connectedCallback() {
+    // Re-draw after being re-attached (dashboard navigation, edit mode)
+    if (this._hass && this._config && !this._chart) {
+      this._lastFetch = 0;
+      this.hass = this._hass;
+    }
+  }
+
+  disconnectedCallback() {
+    if (this._chart) {
+      this._chart.destroy();
+      this._chart = null;
     }
   }
 
@@ -488,29 +545,30 @@ class OverlayGraphCard extends HTMLElement {
           <div class="title-block">
             ${c.show.icon ? `<ha-icon class="icon" id="card-icon"></ha-icon>` : ""}
             <div>
-              ${c.show.name ? `<div class="name" id="card-name">${c.name || c.secondary_info || c.entity}</div>` : ""}
+              ${c.show.name ? `<div class="name" id="card-name">${escapeHtml(c.name || c.secondary_info || c.entity)}</div>` : ""}
               ${(() => {
                 // secondary_info: explicit label always shown if set
-                if (c.secondary_info) return `<div class="entity-id">${c.secondary_info}</div>`;
+                if (c.secondary_info) return `<div class="entity-id">${escapeHtml(c.secondary_info)}</div>`;
                 // entity_id: hidden when statistics is on (would just be noise next to Mean/Min/Max)
-                if (c.show.entity_id !== false && !c.show.statistics) return `<div class="entity-id" id="card-entity-id">${c.entity}</div>`;
+                if (c.show.entity_id !== false && !c.show.statistics) return `<div class="entity-id" id="card-entity-id">${escapeHtml(c.entity)}</div>`;
                 return "";
               })()}
             </div>
           </div>
           ${c.show.current_value ? `
           <div class="value-block">
-            <div><span class="current-value" id="card-value">—</span><span class="unit" id="card-unit"> ${c.unit || ""}</span></div>
+            <div><span class="current-value" id="card-value">—</span><span class="unit" id="card-unit"> ${escapeHtml(c.unit || "")}</span></div>
             <div class="state-age" id="card-age"></div>
           </div>` : ""}
         </div>
         <div class="chart-wrap"><canvas id="ogc" role="img" aria-label="Sensor history graph"></canvas></div>
+        <div class="error" id="card-error" hidden></div>
         ${c.show.extremes ? `<div class="extremes"><span id="extreme-min"></span><span id="extreme-max"></span></div>` : ""}
         ${c.show.legend ? `
         <div class="legend">
           <div class="legend-item">
             <div class="legend-swatch" id="primary-swatch"></div>
-            <span id="primary-legend-label">${c.show.statistics ? "Mean" : (c.name || c.secondary_info || c.entity)}</span>
+            <span id="primary-legend-label">${c.show.statistics ? "Mean" : escapeHtml(c.name || c.secondary_info || c.entity)}</span>
           </div>
           ${c.show.statistics ? `
           <div class="legend-item">
@@ -520,7 +578,7 @@ class OverlayGraphCard extends HTMLElement {
           ${c.overlays.map((ov, i) => `
           <div class="legend-item">
             <div class="legend-swatch overlay-swatch" id="overlay-swatch-${i}" style="border: 1px solid #aaa"></div>
-            <span>${ov.label || "Active"}${ov.invert ? " (off)" : ""}</span>
+            <span>${escapeHtml(ov.label || "Active")}${ov.invert ? " (off)" : ""}</span>
           </div>`).join("")}
         </div>` : ""}
       </ha-card>
@@ -530,18 +588,20 @@ class OverlayGraphCard extends HTMLElement {
     const card = this.shadowRoot.querySelector(".card");
     if (card) {
       let pressTimer = null;
-      card.style.cursor = "pointer";
+      const hasTap = c.tap_action && c.tap_action.action !== "none";
+      const hasHold = c.hold_action && c.hold_action.action !== "none";
+      if (hasTap || hasHold) card.style.cursor = "pointer";
       card.addEventListener("pointerdown", () => {
         pressTimer = setTimeout(() => {
           pressTimer = null;
-          this._handleAction(this._config.hold_action);
+          this._handleAction("hold");
         }, 500);
       });
       card.addEventListener("pointerup", () => {
         if (pressTimer) {
           clearTimeout(pressTimer);
           pressTimer = null;
-          this._handleAction(this._config.tap_action);
+          this._handleAction("tap");
         }
       });
       card.addEventListener("pointerleave", () => {
@@ -551,32 +611,24 @@ class OverlayGraphCard extends HTMLElement {
   }
 
   // ---- Action handling ----------------------------------------------------
-  _handleAction(actionConfig) {
-    if (!actionConfig || !this._hass) return;
-    const { action, navigation_path, service, service_data, entity } = actionConfig;
-    const targetEntity = entity || this._config.entity;
-    switch (action) {
-      case "more-info":
-        this._hass.callService && this.dispatchEvent(
-          new CustomEvent("hass-more-info", { detail: { entityId: targetEntity }, bubbles: true, composed: true })
-        );
-        break;
-      case "navigate":
-        if (navigation_path) history.pushState(null, "", navigation_path);
-        break;
-      case "toggle":
-        this._hass.callService("homeassistant", "toggle", { entity_id: targetEntity });
-        break;
-      case "call-service": {
-        if (!service) break;
-        const [domain, svc] = service.split(".");
-        this._hass.callService(domain, svc, service_data || {});
-        break;
-      }
-      case "none":
-      default:
-        break;
-    }
+  // Delegates to Home Assistant's built-in action handler, which supports
+  // more-info, toggle, navigate, url, perform-action (and legacy call-service),
+  // assist, fire-dom-event, confirmation and haptics.
+  _handleAction(type) {
+    const c = this._config;
+    const actionConfig = type === "hold" ? c.hold_action : c.tap_action;
+    if (!actionConfig || actionConfig.action === "none") return;
+    // A per-action `entity` overrides the card entity (more-info / toggle)
+    const config = {
+      entity: actionConfig.entity || c.entity,
+      tap_action: c.tap_action,
+      hold_action: c.hold_action,
+    };
+    this.dispatchEvent(new CustomEvent("hass-action", {
+      detail: { config, action: type },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   // ---- Data + chart update ------------------------------------------------
@@ -623,47 +675,67 @@ class OverlayGraphCard extends HTMLElement {
         }
       }
 
+      // One shared time window for primary, overlays and labels
+      const windowEnd = Date.now();
+      const windowStart = windowEnd - c.hours_to_show * 3600 * 1000;
+      this._unit = c.unit || (stateObj && stateObj.attributes.unit_of_measurement) || "";
+
       // Fetch history / statistics for primary
       let primaryData; // { means, mins, maxs } | number[]
       if (c.show.statistics) {
-        const statRows = await fetchStatistics(hass, c.entity, c.hours_to_show);
+        const statRows = await fetchStatistics(hass, c.entity, windowStart, windowEnd);
         if (statRows) {
-          primaryData = resampleStats(statRows, this._POINTS, c.hours_to_show);
+          primaryData = resampleStats(statRows, this._POINTS, windowStart, windowEnd);
         } else {
           // No stats recorded – fall back silently to raw history (mean only)
-          const raw = await fetchHistory(hass, c.entity, c.hours_to_show);
-          const pts = resampleToPoints(raw, this._POINTS, true);
+          const raw = await fetchHistory(hass, c.entity, windowStart, windowEnd);
+          const pts = resampleToPoints(raw, this._POINTS, windowStart, windowEnd);
           primaryData = { means: pts, mins: pts, maxs: pts };
         }
       } else {
-        const raw = await fetchHistory(hass, c.entity, c.hours_to_show);
-        primaryData = resampleToPoints(raw, this._POINTS, true);
+        const raw = await fetchHistory(hass, c.entity, windowStart, windowEnd);
+        primaryData = resampleToPoints(raw, this._POINTS, windowStart, windowEnd);
       }
 
       // Fetch history for all overlays in parallel
       const overlayResults = await Promise.all(
         c.overlays.map(async (ov) => ({
           ov,
-          states: await fetchHistory(hass, ov.entity, c.hours_to_show),
+          isActive: makeActiveTest(ov),
+          states: await fetchHistory(hass, ov.entity, windowStart, windowEnd),
         }))
       );
 
-      const windowEnd = Date.now();
-      const windowStart = windowEnd - c.hours_to_show * 3600 * 1000;
-      const labels = generateLabels(c.hours_to_show, this._POINTS);
-      this._drawChart(labels, primaryData, overlayResults, windowStart, windowEnd);
+      const labels = generateLabels(windowStart, windowEnd, this._POINTS, hass.locale && hass.locale.language);
+      await this._drawChart(labels, primaryData, overlayResults, windowStart, windowEnd);
+      this._showError(null);
     } catch (e) {
       console.error("overlay-graph-card error:", e);
+      this._showError(e && e.message ? e.message : String(e));
     } finally {
       this._updating = false;
     }
   }
 
+  _showError(msg) {
+    const el = this.shadowRoot.getElementById("card-error");
+    if (!el) return;
+    el.textContent = msg ? `overlay-graph-card: ${msg}` : "";
+    el.hidden = !msg;
+  }
+
   async _drawChart(labels, primaryData, overlayResults, windowStart, windowEnd) {
     await loadChartJs();
+    // The card may have been detached or re-rendered while awaiting
+    if (!this.isConnected) return;
     const canvas = this.shadowRoot.getElementById("ogc");
     if (!canvas) return;
+    if (this._chart && this._chart.canvas !== canvas) {
+      this._chart.destroy();
+      this._chart = null;
+    }
     const c = this._config;
+    const unit = this._unit || "";
 
     const graphColor = c.color || "teal";
 
@@ -721,11 +793,11 @@ class OverlayGraphCard extends HTMLElement {
 
     // Build annotations from all overlays, merged into one object
     const annotations = {};
-    overlayResults.forEach(({ ov, states }, oi) => {
+    overlayResults.forEach(({ states, isActive }, oi) => {
       if (!states || !states.length) return;
       const ovPal = overlayPalettes[oi];
       const ovAnnotations = buildAnnotationsFromStates(
-        states, windowStart, windowEnd, ovPal, this._POINTS, ov.threshold ?? null, ov.invert ?? false, ov.active_state ?? null
+        states, windowStart, windowEnd, ovPal, this._POINTS, isActive
       );
       // Prefix keys to avoid collisions between overlays
       Object.entries(ovAnnotations).forEach(([k, v]) => {
@@ -733,8 +805,11 @@ class OverlayGraphCard extends HTMLElement {
       });
     });
 
-    // Dark mode detect (HA uses prefers-color-scheme)
-    const isDark = matchMedia("(prefers-color-scheme: dark)").matches;
+    // Dark mode: follow HA's active theme, fall back to the OS setting
+    const themes = this._hass && this._hass.themes;
+    const isDark = themes && typeof themes.darkMode === "boolean"
+      ? themes.darkMode
+      : matchMedia("(prefers-color-scheme: dark)").matches;
     const gridColor = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)";
     const tickColor = isDark ? "rgba(255,255,255,0.38)" : "rgba(0,0,0,0.38)";
 
@@ -808,19 +883,11 @@ class OverlayGraphCard extends HTMLElement {
             ? (() => {
                 const first = overlayResults[0];
                 if (!first || !first.states || !first.states.length) return pal.fill;
-                const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
                 return meanArr.map((_, i) => {
-                  const t = windowStart + (i / (this._POINTS - 1)) * (windowEnd - windowStart);
-                  let active = false;
-                  for (let s = 0; s < first.states.length; s++) {
-                    if (new Date(first.states[s].last_changed).getTime() <= t) {
-                      active = first.ov.threshold != null
-                        ? parseFloat(first.states[s].state) > first.ov.threshold
-                        : TRUTHY.has(first.states[s].state);
-                    }
-                  }
-                  if (first.ov.invert) active = !active;
-                  return active ? overlayPalettes[0].overlayResolved : pal.fill;
+                  const t = gridTime(i, this._POINTS, windowStart, windowEnd);
+                  return activeAt(first.states, first.isActive, t)
+                    ? overlayPalettes[0].overlayResolved
+                    : pal.fill;
                 });
               })()
             : pal.fill,
@@ -853,7 +920,6 @@ class OverlayGraphCard extends HTMLElement {
               label: isStats
                 ? (item) => {
                     const i = item.dataIndex;
-                    const unit = c.unit || "";
                     const fmt = (v) => v != null ? v.toFixed(1) + unit : "—";
                     return [
                       `Mean: ${fmt(meanArr[i])}`,
@@ -861,33 +927,14 @@ class OverlayGraphCard extends HTMLElement {
                       `Max:  ${fmt(maxArr[i])}`,
                     ];
                   }
-                : (item) => `${item.formattedValue}${c.unit || ""}`,
+                : (item) => `${item.formattedValue}${unit}`,
               afterBody: overlayResults.length
                 ? (items) => {
                     const i = items[0].dataIndex;
-                    const t = windowStart + (i / (this._POINTS - 1)) * (windowEnd - windowStart);
-                    const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
-                    return overlayResults.flatMap(({ ov, states }) => {
+                    const t = gridTime(i, this._POINTS, windowStart, windowEnd);
+                    return overlayResults.flatMap(({ ov, states, isActive }) => {
                       if (!states || !states.length) return [];
-                      const activeStates = ov.active_state
-                        ? new Set(Array.isArray(ov.active_state) ? ov.active_state : [ov.active_state])
-                        : null;
-                      const TRUTHY = new Set(["on","true","1","open","unlocked","active","running","heating","cooling","fan_only"]);
-                      let active = false;
-                      for (let s = 0; s < states.length; s++) {
-                        if (new Date(states[s].last_changed).getTime() <= t) {
-                          let result;
-                          if (activeStates) {
-                            result = activeStates.has(states[s].state);
-                          } else if (ov.threshold != null) {
-                            result = parseFloat(states[s].state) > ov.threshold;
-                          } else {
-                            result = TRUTHY.has(states[s].state);
-                          }
-                          active = ov.invert ? !result : result;
-                        }
-                      }
-                      return active ? [`${ov.label || "Active"}: ON`] : [];
+                      return activeAt(states, isActive, t) ? [`${ov.label || "Active"}: ON`] : [];
                     });
                   }
                 : undefined,
@@ -910,8 +957,7 @@ class OverlayGraphCard extends HTMLElement {
             ticks: {
               color: tickColor,
               font: { size: 10 },
-              callback: (v) =>
-                v + (c.unit || ""),
+              callback: (v) => v + unit,
             },
             grid: { color: gridColor },
           },
@@ -930,82 +976,6 @@ class OverlayGraphCard extends HTMLElement {
 
   // ---- Lovelace helpers ---------------------------------------------------
   getCardSize() { return 4; }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal editor element (shows raw YAML hint)
-// ---------------------------------------------------------------------------
-class OverlayGraphCardEditor extends HTMLElement {
-  setConfig(config) { this._config = config; }
-  connectedCallback() {
-    if (this.shadowRoot) return;
-    this.attachShadow({ mode: "open" });
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host { display: block; padding: 1rem; }
-        pre { font-size: 12px; background: #f5f5f5; padding: 12px; border-radius: 8px; overflow: auto; }
-      </style>
-      <p style="font-size:13px; color: #555; margin: 0 0 8px;">
-        Edit via the YAML editor. Example config:
-      </p>
-      <pre>
-type: custom:overlay-graph-card
-entity: sensor.coolroom_temperature
-name: Cool Room
-secondary_info: "Compressor + door monitoring"  # optional label below name; hides entity ID when set
-unit: "°C"
-hours_to_show: 24
-color: blue
-graph: line
-smoothing: 0.2
-
-# Single overlay (object form – back-compatible)
-# overlay:
-#   entity: binary_sensor.coolroom_compressor
-#   label: Compressor
-#   color: amber
-#   opacity: 0.35
-#   invert: false      # true = highlight when OFF instead of ON
-#   threshold: null    # numeric sensors: active above this value
-
-# Multiple overlays (list form)
-overlay:
-  - entity: binary_sensor.coolroom_compressor
-    label: Compressor running
-    color: amber
-    opacity: 0.35
-    invert: false      # true = highlight when inactive instead
-    # threshold: 0.1   # numeric sensors: active above this value
-    # active_state: "running"             # single string state
-    # active_state: ["heating","cooling"] # or a list of states
-  - entity: binary_sensor.coolroom_door
-    label: Door open
-    color: coral
-    opacity: 0.30
-    invert: false
-
-# Tap / hold actions
-tap_action:
-  action: more-info          # more-info | navigate | toggle | call-service | none
-hold_action:
-  action: call-service
-  service: script.start_irrigation
-  # service_data:
-  #   duration: 300
-  # navigation_path: /lovelace/irrigation  (for navigate action)
-  # entity: switch.other_entity            (overrides card entity for toggle/more-info)
-
-show:
-  name: true
-  icon: true
-  entity_id: true
-  current_value: true
-  legend: true
-  extremes: false
-  statistics: false
-  statistics_opacity: 0.18</pre>
-    `;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,17 +1009,19 @@ function _relativeTime(isoString) {
 // ---------------------------------------------------------------------------
 // Register
 // ---------------------------------------------------------------------------
-customElements.define("overlay-graph-card", OverlayGraphCard);
-customElements.define("overlay-graph-card-editor", OverlayGraphCardEditor);
+// Guard against double registration (e.g. resource loaded from two URLs)
+if (!customElements.get("overlay-graph-card")) {
+  customElements.define("overlay-graph-card", OverlayGraphCard);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
+if (!window.customCards.some((c) => c.type === "overlay-graph-card")) window.customCards.push({
   type: "overlay-graph-card",
   name: "Overlay Graph Card",
   description:
     "Plot a sensor with background shading from a secondary binary or numeric sensor (e.g. irrigation valve, heater, motion).",
   preview: false,
-  documentationURL: "https://github.com/your-repo/overlay-graph-card",
+  documentationURL: "https://github.com/hdcoffeeboy/ha-overlay-graph-card",
 });
 
 console.info(
