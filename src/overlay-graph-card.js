@@ -15,6 +15,8 @@ import {
   Filler, Tooltip,
 } from "chart.js";
 import annotationPlugin from "chartjs-plugin-annotation";
+import { SHOW_DEFAULTS, OVERLAY_DEFAULTS, ACTION_DEFAULTS, smoothingStrength } from "./const.js";
+import { OverlayGraphCardEditor } from "./editor.js";
 
 // Replaced at build time from package.json
 const CARD_VERSION = __CARD_VERSION__;
@@ -404,6 +406,10 @@ class OverlayGraphCard extends HTMLElement {
     this._POINTS = 96;
   }
 
+  static getConfigElement() {
+    return document.createElement("overlay-graph-card-editor");
+  }
+
   static getStubConfig(hass) {
     const ids = hass ? Object.keys(hass.states) : [];
     const sensor = ids.find((id) =>
@@ -427,15 +433,10 @@ class OverlayGraphCard extends HTMLElement {
     const rawOverlays = config.overlay
       ? (Array.isArray(config.overlay) ? config.overlay : [config.overlay])
       : [];
-    const overlays = rawOverlays.map((ov) => ({
-      color: null,
-      opacity: 0.35,
-      threshold: null,
-      active_state: null,
-      label: "Active",
-      invert: false,
-      ...ov,
-    }));
+    // Overlays without an entity (e.g. just added in the editor) are skipped
+    const overlays = rawOverlays
+      .filter((ov) => ov && ov.entity)
+      .map((ov) => ({ ...OVERLAY_DEFAULTS, ...ov }));
 
     this._config = {
       name: null,
@@ -445,11 +446,10 @@ class OverlayGraphCard extends HTMLElement {
       graph: "line",
       smoothing: true,
       unit: null,
-      tap_action: { action: "more-info" },
-      hold_action: { action: "none" },
+      ...ACTION_DEFAULTS,
       ...config,
       overlays,
-      show: { name: true, icon: true, entity_id: true, current_value: true, legend: true, extremes: false, statistics: false, statistics_opacity: 0.18, ...(config.show || {}) },
+      show: { ...SHOW_DEFAULTS, ...(config.show || {}) },
     };
     if (this._chart) {
       this._chart.destroy();
@@ -657,7 +657,7 @@ class OverlayGraphCard extends HTMLElement {
       if (c.show.icon) {
         const iconEl = this.shadowRoot.getElementById("card-icon");
         if (iconEl && stateObj) {
-          iconEl.icon = stateObj.attributes.icon || _domainIcon(c.entity);
+          iconEl.icon = c.icon || stateObj.attributes.icon || _domainIcon(c.entity);
         }
       }
 
@@ -824,9 +824,7 @@ class OverlayGraphCard extends HTMLElement {
     // smoothing: false/0 = raw data + straight lines
     //            true    = Gaussian pre-smooth at strength 0.4 + monotone curves
     //            0–1     = smoothing strength (0 = none, 1 = very smooth)
-    const smoothStrength = typeof c.smoothing === "number"
-      ? Math.min(1, Math.max(0, c.smoothing))
-      : (c.smoothing ? 0.2 : 0);
+    const smoothStrength = smoothingStrength(c.smoothing);
 
     // Pre-smooth the data arrays – this is where the visual difference comes from
     const sMean = smoothArray(meanArr, smoothStrength);
@@ -1024,6 +1022,9 @@ function _relativeTime(isoString) {
 if (!customElements.get("overlay-graph-card")) {
   customElements.define("overlay-graph-card", OverlayGraphCard);
 }
+if (!customElements.get("overlay-graph-card-editor")) {
+  customElements.define("overlay-graph-card-editor", OverlayGraphCardEditor);
+}
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "overlay-graph-card")) window.customCards.push({
@@ -1031,7 +1032,7 @@ if (!window.customCards.some((c) => c.type === "overlay-graph-card")) window.cus
   name: "Overlay Graph Card",
   description:
     "Plot a sensor with background shading from a secondary binary or numeric sensor (e.g. irrigation valve, heater, motion).",
-  preview: false,
+  preview: true,
   documentationURL: "https://github.com/hdcoffeeboy/ha-overlay-graph-card",
 });
 

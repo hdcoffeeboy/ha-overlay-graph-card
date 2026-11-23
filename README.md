@@ -11,7 +11,7 @@ The card is self-contained (Chart.js is bundled); no internet access is needed a
 
 ## Configuration
 
-Configure the card in the YAML editor. Full example:
+The card has a visual editor (add it from the dashboard card picker). All options can also be set in YAML. Full example:
 
 ```yaml
 type: custom:overlay-graph-card
@@ -83,4 +83,4 @@ npm run build   # → dist/overlay-graph-card.js
 npm run watch   # rebuild on change
 ```
 
-Source is in `src/overlay-graph-card.js`. The version shown in the browser console comes from `package.json`.
+Source is in `src/`: `overlay-graph-card.js` (card), `editor.js` (visual editor), `const.js` (shared defaults). The version shown in the browser console comes from `package.json`.
