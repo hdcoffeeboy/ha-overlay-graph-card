@@ -130,7 +130,7 @@ const LABELS = {
 };
 
 const HELPERS = {
-  entity_id: "Ignored when a Subtitle is set or the Statistics band is on",
+  entity_id: "Ignored when a Subtitle is set",
   tap_action_entity: "Defaults to the card entity",
   hold_action_entity: "Defaults to the card entity",
   secondary_info: "Shown under the name instead of the entity ID",

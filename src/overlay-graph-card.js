@@ -553,8 +553,8 @@ class OverlayGraphCard extends HTMLElement {
               ${(() => {
                 // secondary_info: explicit label always shown if set
                 if (c.secondary_info) return `<div class="entity-id">${escapeHtml(c.secondary_info)}</div>`;
-                // entity_id: hidden when statistics is on (would just be noise next to Mean/Min/Max)
-                if (c.show.entity_id !== false && !c.show.statistics) return `<div class="entity-id" id="card-entity-id">${escapeHtml(c.entity)}</div>`;
+                // entity_id: shown unless turned off
+                if (c.show.entity_id !== false) return `<div class="entity-id" id="card-entity-id">${escapeHtml(c.entity)}</div>`;
                 return "";
               })()}
             </div>
