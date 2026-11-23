@@ -4,8 +4,10 @@ Home Assistant Lovelace card that plots a sensor's history and shades background
 
 ## Installation (manual)
 
-1. Copy `overlay-graph-card.js` to `<config>/www/`.
+1. Download `overlay-graph-card.js` from the latest [release](https://github.com/hdcoffeeboy/ha-overlay-graph-card/releases) (or build it, below) and copy it to `<config>/www/`.
 2. Add a dashboard resource: URL `/local/overlay-graph-card.js`, type **JavaScript module**.
+
+The card is self-contained (Chart.js is bundled); no internet access is needed at runtime.
 
 ## Configuration
 
@@ -70,3 +72,15 @@ show:
 ```
 
 `tap_action` / `hold_action` use Home Assistant's standard [action configuration](https://www.home-assistant.io/dashboards/actions/) (`more-info`, `toggle`, `navigate`, `url`, `perform-action`, `none`). Legacy `call-service` still works.
+
+## Development
+
+Requires Node.js 20+.
+
+```sh
+npm install
+npm run build   # → dist/overlay-graph-card.js
+npm run watch   # rebuild on change
+```
+
+Source is in `src/overlay-graph-card.js`. The version shown in the browser console comes from `package.json`.
